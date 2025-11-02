@@ -13,11 +13,9 @@ if (!isset($_SESSION['customer_id'])) {
 
 $message = "";
 
-
 // Fetch barbers & services (with price)
 $barbers  = $conn->query("SELECT id, username FROM users WHERE role='barber'");
 $services = $conn->query("SELECT service_id, service_name, duration, price FROM services ORDER BY service_name");
-
 
 // Handle Booking Submission
 if (isset($_POST['book'])) {
@@ -30,25 +28,21 @@ if (isset($_POST['book'])) {
     if (empty($barber_id) || empty($service_ids) || empty($date) || empty($time)) {
         $message = "⚠️ Please fill in all fields.";
     } else {
-        // Basic calendar rules
         $dayOfWeek = date('w', strtotime($date));
         if ($dayOfWeek == 0) {
             $message = "❌ We are closed on Sundays.";
         } elseif (strtotime($date) < strtotime(date('Y-m-d'))) {
             $message = "❌ You cannot book past dates.";
         } else {
-            // Hour window (8:00–17:00)
             $hour = (int)date("H", strtotime($time));
             if ($hour < 8 || $hour >= 17) {
                 $message = "❌ Bookings are only available between 08:00 and 17:00.";
             } else {
-                // Real-time guard: block past times on today's date
                 $currentDate = date('Y-m-d');
                 $currentTime = date('H:i');
                 if ($date === $currentDate && $time <= $currentTime) {
                     $message = "❌ You cannot book a past time.";
                 } else {
-                    // Prevent double bookings (same barber/date/time)
                     $check = $conn->prepare("
                         SELECT COUNT(*) FROM appointments
                         WHERE barber_id = ? AND appointment_date = ? AND appointment_time = ?
@@ -63,8 +57,6 @@ if (isset($_POST['book'])) {
                     if ($count > 0) {
                         $message = "❌ This slot is already booked.";
                     } else {
-                        // Fetch selected services for names + prices + total 
-                        // Build IN clause safely
                         $ids = array_map('intval', $service_ids);
                         $placeholders = implode(',', array_fill(0, count($ids), '?'));
                         $types = str_repeat('i', count($ids));
@@ -77,7 +69,7 @@ if (isset($_POST['book'])) {
                         $selectedServices = [];
                         $totalPrice = 0.00;
                         while ($row = $svc_res->fetch_assoc()) {
-                            $selectedServices[] = $row; // service_name, duration, price
+                            $selectedServices[] = $row;
                             $totalPrice += (float)$row['price'];
                         }
                         $svc_stmt->close();
@@ -95,7 +87,7 @@ if (isset($_POST['book'])) {
                             $appointment_id = $conn->insert_id;
                             $stmt->close();
 
-                            // Link services to appointment
+                            // Link services
                             $link_stmt = $conn->prepare("INSERT INTO appointment_services (appointment_id, service_id) VALUES (?, ?)");
                             foreach ($ids as $sid) {
                                 $link_stmt->bind_param("ii", $appointment_id, $sid);
@@ -103,7 +95,6 @@ if (isset($_POST['book'])) {
                             }
                             $link_stmt->close();
 
-                            // Prepare email details
                             $custName   = $_SESSION['customer_name'] ?? 'Customer';
                             $custEmail  = $_SESSION['customer_email'] ?? '';
                             $barberName = ($barber_id == 1) ? "Faizal" : "Zaid";
@@ -111,32 +102,26 @@ if (isset($_POST['book'])) {
                                 ? "faizal.uppercut@gmail.com"
                                 : "zaid.uppercut@gmail.com";
 
-                            // Services list HTML for email
                             $svcHtml = "<ul style='margin:8px 0 0 18px;'>";
                             foreach ($selectedServices as $svc) {
-                                $svcHtml .= "<li>"
-                                          . htmlspecialchars($svc['service_name'])
-                                          . " — R" . number_format((float)$svc['price'], 0)
-                                          . "</li>";
+                                $svcHtml .= "<li>" . htmlspecialchars($svc['service_name']) . " — R" . number_format((float)$svc['price'], 0) . "</li>";
                             }
                             $svcHtml .= "</ul>";
 
                             $message = "✅ Appointment booked successfully! A confirmation email has been sent.";
 
-                            
-                            // EMAIL: Customer Confirmation
-                            
+                            // EMAIL: Customer Confirmation (via Brevo)
                             try {
                                 $mail = new PHPMailer(true);
                                 $mail->isSMTP();
-                                $mail->Host       = 'smtp.gmail.com';
+                                $mail->Host       = getenv('MAIL_HOST');
                                 $mail->SMTPAuth   = true;
-                                $mail->Username   = 'shopappointments01@gmail.com';
-                                $mail->Password   = 'inuazoxbdmwicspj'; // Gmail App Password
-                                $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-                                $mail->Port       = 587;
+                                $mail->Username   = getenv('MAIL_USER');
+                                $mail->Password   = getenv('MAIL_PASS');
+                                $mail->SMTPSecure = 'tls';
+                                $mail->Port       = getenv('MAIL_PORT');
 
-                                $mail->setFrom('shopappointments01@gmail.com', 'UPPERCUT Barbershop');
+                                $mail->setFrom(getenv('MAIL_USER'), 'UPPERCUT Barbershop');
                                 if (!empty($custEmail)) {
                                     $mail->addAddress($custEmail, $custName);
                                 }
@@ -147,17 +132,14 @@ if (isset($_POST['book'])) {
                                     <div style='background:#0d0d0d;color:#fff;font-family:Poppins,Arial,sans-serif;padding:20px;border-radius:10px;border:1px solid #d4af37;'>
                                         <h2 style='color:#d4af37;margin:0 0 6px;'>Appointment Booked ✂️</h2>
                                         <p style='margin:8px 0;'>Hi <b>".htmlspecialchars($custName)."</b>,</p>
-                                        <p style='margin:8px 0;'>Your appointment at <b>UPPERCUT Barbershop</b> has been booked.</p>
+                                        <p>Your appointment has been successfully booked with <b>".htmlspecialchars($barberName)."</b>.</p>
                                         <table style='width:100%;margin:10px 0;border-collapse:collapse;'>
-                                            <tr><td style='padding:4px 0;'><b>Barber:</b></td><td>".htmlspecialchars($barberName)."</td></tr>
-                                            <tr><td style='padding:4px 0;'><b>Date:</b></td><td>".htmlspecialchars($date)."</td></tr>
-                                            <tr><td style='padding:4px 0;'><b>Time:</b></td><td>".htmlspecialchars($time)."</td></tr>
-                                            <tr><td style='padding:4px 0;vertical-align:top;'><b>Services:</b></td><td>$svcHtml</td></tr>
-                                            <tr><td style='padding:6px 0;'><b>Total:</b></td><td><b style='color:#d4af37;'>R".number_format($totalPrice, 0)."</b></td></tr>
-                                            <tr><td style='padding:4px 0;'><b>Status:</b></td><td><span style='color:#d4af37;'>Pending Approval</span></td></tr>
+                                            <tr><td><b>Date:</b></td><td>".htmlspecialchars($date)."</td></tr>
+                                            <tr><td><b>Time:</b></td><td>".htmlspecialchars($time)."</td></tr>
+                                            <tr><td style='vertical-align:top;'><b>Services:</b></td><td>$svcHtml</td></tr>
+                                            <tr><td><b>Total:</b></td><td><b style='color:#d4af37;'>R".number_format($totalPrice, 0)."</b></td></tr>
                                         </table>
-                                        <p style='margin-top:12px;'>We'll email you once your barber approves the booking.</p>
-                                        <p style='color:#d4af37;font-weight:bold;margin-top:16px;'>Stay Sharp 💈</p>
+                                        <p style='margin-top:10px;'>We look forward to seeing you at <b>UPPERCUT Barbershop</b>!</p>
                                     </div>
                                 ";
                                 $mail->send();
@@ -165,20 +147,18 @@ if (isset($_POST['book'])) {
                                 error_log("Customer Mail Error: " . $mail->ErrorInfo);
                             }
 
-                            
-                            // EMAIL: Barber Notification (Reply goes to customer)
-                            
+                            // EMAIL: Barber Notification
                             try {
                                 $mail2 = new PHPMailer(true);
                                 $mail2->isSMTP();
-                                $mail2->Host       = 'smtp.gmail.com';
+                                $mail2->Host       = getenv('MAIL_HOST');
                                 $mail2->SMTPAuth   = true;
-                                $mail2->Username   = 'shopappointments01@gmail.com';
-                                $mail2->Password   = 'inuazoxbdmwicspj';
-                                $mail2->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-                                $mail2->Port       = 587;
+                                $mail2->Username   = getenv('MAIL_USER');
+                                $mail2->Password   = getenv('MAIL_PASS');
+                                $mail2->SMTPSecure = 'tls';
+                                $mail2->Port       = getenv('MAIL_PORT');
 
-                                $mail2->setFrom('shopappointments01@gmail.com', 'UPPERCUT Barbershop');
+                                $mail2->setFrom(getenv('MAIL_USER'), 'UPPERCUT Barbershop');
                                 $mail2->addAddress($barberEmail, $barberName);
                                 if (!empty($custEmail)) {
                                     $mail2->addReplyTo($custEmail, $custName);
@@ -189,16 +169,15 @@ if (isset($_POST['book'])) {
                                 $mail2->Body = "
                                     <div style='background:#0d0d0d;color:#fff;font-family:Poppins,Arial,sans-serif;padding:20px;border-radius:10px;border:1px solid #d4af37;'>
                                         <h2 style='color:#d4af37;margin:0 0 6px;'>New Appointment</h2>
-                                        <p style='margin:8px 0;'>Hello <b>".htmlspecialchars($barberName)."</b>,</p>
-                                        <p style='margin:8px 0;'><b>".htmlspecialchars($custName)."</b> has booked an appointment with you.</p>
+                                        <p>Hello <b>".htmlspecialchars($barberName)."</b>,</p>
+                                        <p><b>".htmlspecialchars($custName)."</b> has booked an appointment.</p>
                                         <table style='width:100%;margin:10px 0;border-collapse:collapse;'>
-                                            <tr><td style='padding:4px 0;'><b>Date:</b></td><td>".htmlspecialchars($date)."</td></tr>
-                                            <tr><td style='padding:4px 0;'><b>Time:</b></td><td>".htmlspecialchars($time)."</td></tr>
-                                            <tr><td style='padding:4px 0;vertical-align:top;'><b>Services:</b></td><td>$svcHtml</td></tr>
-                                            <tr><td style='padding:6px 0;'><b>Total:</b></td><td><b style='color:#d4af37;'>R".number_format($totalPrice, 0)."</b></td></tr>
+                                            <tr><td><b>Date:</b></td><td>".htmlspecialchars($date)."</td></tr>
+                                            <tr><td><b>Time:</b></td><td>".htmlspecialchars($time)."</td></tr>
+                                            <tr><td style='vertical-align:top;'><b>Services:</b></td><td>$svcHtml</td></tr>
+                                            <tr><td><b>Total:</b></td><td><b style='color:#d4af37;'>R".number_format($totalPrice, 0)."</b></td></tr>
                                         </table>
-                                        <p style='margin-top:10px;'>Please log in to your dashboard to approve or cancel.</p>
-                                        <p style='color:#d4af37;font-weight:bold;margin-top:16px;'>UPPERCUT Barbershop</p>
+                                        <p style='margin-top:10px;'>Please log in to approve or decline.</p>
                                     </div>
                                 ";
                                 $mail2->send();
