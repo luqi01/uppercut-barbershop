@@ -2,10 +2,6 @@
 session_start();
 include 'db.php';
 
-use PHPMailer\PHPMailer\PHPMailer;
-use PHPMailer\PHPMailer\Exception;
-require 'vendor/autoload.php';
-
 if (!isset($_SESSION['customer_id'])) {
     header("Location: login_register.php");
     exit;
@@ -13,7 +9,7 @@ if (!isset($_SESSION['customer_id'])) {
 
 $message = "";
 
-// Fetch barbers & services (with price)
+// Fetch barbers & services
 $barbers  = $conn->query("SELECT id, username FROM users WHERE role='barber'");
 $services = $conn->query("SELECT service_id, service_name, duration, price FROM services ORDER BY service_name");
 
@@ -77,7 +73,6 @@ if (isset($_POST['book'])) {
                         if (empty($selectedServices)) {
                             $message = "❌ Please select at least one valid service.";
                         } else {
-                            // Insert appointment
                             $stmt = $conn->prepare("
                                 INSERT INTO appointments (customer_id, barber_id, appointment_date, appointment_time, status)
                                 VALUES (?, ?, ?, ?, 'Pending')
@@ -87,7 +82,6 @@ if (isset($_POST['book'])) {
                             $appointment_id = $conn->insert_id;
                             $stmt->close();
 
-                            // Link services
                             $link_stmt = $conn->prepare("INSERT INTO appointment_services (appointment_id, service_id) VALUES (?, ?)");
                             foreach ($ids as $sid) {
                                 $link_stmt->bind_param("ii", $appointment_id, $sid);
@@ -95,6 +89,7 @@ if (isset($_POST['book'])) {
                             }
                             $link_stmt->close();
 
+                            // Prepare email info
                             $custName   = $_SESSION['customer_name'] ?? 'Customer';
                             $custEmail  = $_SESSION['customer_email'] ?? '';
                             $barberName = ($barber_id == 1) ? "Faizal" : "Zaid";
@@ -104,86 +99,77 @@ if (isset($_POST['book'])) {
 
                             $svcHtml = "<ul style='margin:8px 0 0 18px;'>";
                             foreach ($selectedServices as $svc) {
-                                $svcHtml .= "<li>" . htmlspecialchars($svc['service_name']) . " — R" . number_format((float)$svc['price'], 0) . "</li>";
+                                $svcHtml .= "<li>" . htmlspecialchars($svc['service_name'])
+                                          . " — R" . number_format((float)$svc['price'], 0)
+                                          . "</li>";
                             }
                             $svcHtml .= "</ul>";
 
                             $message = "✅ Appointment booked successfully! A confirmation email has been sent.";
 
-                            // EMAIL: Customer Confirmation (via Brevo)
-                            try {
-                                $mail = new PHPMailer(true);
-                                $mail->isSMTP();
-                                $mail->Host       = getenv('MAIL_HOST');
-                                $mail->SMTPAuth   = true;
-                                $mail->Username   = getenv('MAIL_USER');
-                                $mail->Password   = getenv('MAIL_PASS');
-                                $mail->SMTPSecure = 'tls';
-                                $mail->Port       = getenv('MAIL_PORT');
-
-                                $mail->setFrom(getenv('MAIL_USER'), 'UPPERCUT Barbershop');
-                                if (!empty($custEmail)) {
-                                    $mail->addAddress($custEmail, $custName);
+                            // 🔹 Brevo API Email Function
+                            function sendBrevoEmail($toEmail, $toName, $subject, $htmlContent) {
+                                $apiKey = getenv('BREVO_API_KEY');
+                                $url = 'https://api.brevo.com/v3/smtp/email';
+                                $payload = [
+                                    'sender' => ['name' => 'UPPERCUT Barbershop', 'email' => 'shopappointments01@gmail.com'],
+                                    'to' => [['email' => $toEmail, 'name' => $toName]],
+                                    'subject' => $subject,
+                                    'htmlContent' => $htmlContent
+                                ];
+                                $ch = curl_init($url);
+                                curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                                    'accept: application/json',
+                                    'api-key: ' . $apiKey,
+                                    'content-type: application/json',
+                                ]);
+                                curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+                                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                                $response = curl_exec($ch);
+                                if (curl_error($ch)) {
+                                    error_log("Brevo Error: " . curl_error($ch));
+                                } else {
+                                    error_log("Brevo Response: " . $response);
                                 }
+                                curl_close($ch);
+                            }
 
-                                $mail->isHTML(true);
-                                $mail->Subject = 'Booking Confirmation - UPPERCUT Barbershop';
-                                $mail->Body = "
+                            // 📧 Customer Email
+                            if (!empty($custEmail)) {
+                                $custHtml = "
                                     <div style='background:#0d0d0d;color:#fff;font-family:Poppins,Arial,sans-serif;padding:20px;border-radius:10px;border:1px solid #d4af37;'>
                                         <h2 style='color:#d4af37;margin:0 0 6px;'>Appointment Booked ✂️</h2>
-                                        <p style='margin:8px 0;'>Hi <b>".htmlspecialchars($custName)."</b>,</p>
-                                        <p>Your appointment has been successfully booked with <b>".htmlspecialchars($barberName)."</b>.</p>
+                                        <p>Hi <b>$custName</b>, your appointment has been booked at <b>UPPERCUT Barbershop</b>.</p>
                                         <table style='width:100%;margin:10px 0;border-collapse:collapse;'>
-                                            <tr><td><b>Date:</b></td><td>".htmlspecialchars($date)."</td></tr>
-                                            <tr><td><b>Time:</b></td><td>".htmlspecialchars($time)."</td></tr>
-                                            <tr><td style='vertical-align:top;'><b>Services:</b></td><td>$svcHtml</td></tr>
-                                            <tr><td><b>Total:</b></td><td><b style='color:#d4af37;'>R".number_format($totalPrice, 0)."</b></td></tr>
+                                            <tr><td><b>Barber:</b></td><td>$barberName</td></tr>
+                                            <tr><td><b>Date:</b></td><td>$date</td></tr>
+                                            <tr><td><b>Time:</b></td><td>$time</td></tr>
+                                            <tr><td><b>Services:</b></td><td>$svcHtml</td></tr>
+                                            <tr><td><b>Total:</b></td><td><b style='color:#d4af37;'>R$totalPrice</b></td></tr>
+                                            <tr><td><b>Status:</b></td><td><span style='color:#d4af37;'>Pending Approval</span></td></tr>
                                         </table>
-                                        <p style='margin-top:10px;'>We look forward to seeing you at <b>UPPERCUT Barbershop</b>!</p>
-                                    </div>
-                                ";
-                                $mail->send();
-                            } catch (Exception $e) {
-                                error_log("Customer Mail Error: " . $mail->ErrorInfo);
+                                        <p>We’ll email you once your barber approves it.</p>
+                                        <p style='color:#d4af37;font-weight:bold;margin-top:16px;'>Stay Sharp 💈</p>
+                                    </div>";
+                                sendBrevoEmail($custEmail, $custName, 'Booking Confirmation - UPPERCUT Barbershop', $custHtml);
                             }
 
-                            // EMAIL: Barber Notification
-                            try {
-                                $mail2 = new PHPMailer(true);
-                                $mail2->isSMTP();
-                                $mail2->Host       = getenv('MAIL_HOST');
-                                $mail2->SMTPAuth   = true;
-                                $mail2->Username   = getenv('MAIL_USER');
-                                $mail2->Password   = getenv('MAIL_PASS');
-                                $mail2->SMTPSecure = 'tls';
-                                $mail2->Port       = getenv('MAIL_PORT');
-
-                                $mail2->setFrom(getenv('MAIL_USER'), 'UPPERCUT Barbershop');
-                                $mail2->addAddress($barberEmail, $barberName);
-                                if (!empty($custEmail)) {
-                                    $mail2->addReplyTo($custEmail, $custName);
-                                }
-
-                                $mail2->isHTML(true);
-                                $mail2->Subject = 'New Booking - UPPERCUT';
-                                $mail2->Body = "
-                                    <div style='background:#0d0d0d;color:#fff;font-family:Poppins,Arial,sans-serif;padding:20px;border-radius:10px;border:1px solid #d4af37;'>
-                                        <h2 style='color:#d4af37;margin:0 0 6px;'>New Appointment</h2>
-                                        <p>Hello <b>".htmlspecialchars($barberName)."</b>,</p>
-                                        <p><b>".htmlspecialchars($custName)."</b> has booked an appointment.</p>
-                                        <table style='width:100%;margin:10px 0;border-collapse:collapse;'>
-                                            <tr><td><b>Date:</b></td><td>".htmlspecialchars($date)."</td></tr>
-                                            <tr><td><b>Time:</b></td><td>".htmlspecialchars($time)."</td></tr>
-                                            <tr><td style='vertical-align:top;'><b>Services:</b></td><td>$svcHtml</td></tr>
-                                            <tr><td><b>Total:</b></td><td><b style='color:#d4af37;'>R".number_format($totalPrice, 0)."</b></td></tr>
-                                        </table>
-                                        <p style='margin-top:10px;'>Please log in to approve or decline.</p>
-                                    </div>
-                                ";
-                                $mail2->send();
-                            } catch (Exception $e) {
-                                error_log("Barber Mail Error: " . $mail2->ErrorInfo);
-                            }
+                            // 📧 Barber Notification
+                            $barberHtml = "
+                                <div style='background:#0d0d0d;color:#fff;font-family:Poppins,Arial,sans-serif;padding:20px;border-radius:10px;border:1px solid #d4af37;'>
+                                    <h2 style='color:#d4af37;margin:0 0 6px;'>New Appointment</h2>
+                                    <p>Hello <b>$barberName</b>,</p>
+                                    <p><b>$custName</b> booked an appointment with you.</p>
+                                    <table style='width:100%;margin:10px 0;border-collapse:collapse;'>
+                                        <tr><td><b>Date:</b></td><td>$date</td></tr>
+                                        <tr><td><b>Time:</b></td><td>$time</td></tr>
+                                        <tr><td><b>Services:</b></td><td>$svcHtml</td></tr>
+                                        <tr><td><b>Total:</b></td><td><b style='color:#d4af37;'>R$totalPrice</b></td></tr>
+                                    </table>
+                                    <p>Please log in to approve or cancel this booking.</p>
+                                    <p style='color:#d4af37;font-weight:bold;margin-top:16px;'>UPPERCUT Barbershop</p>
+                                </div>";
+                            sendBrevoEmail($barberEmail, $barberName, 'New Booking - UPPERCUT Barbershop', $barberHtml);
                         }
                     }
                 }
@@ -192,6 +178,7 @@ if (isset($_POST['book'])) {
     }
 }
 ?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
