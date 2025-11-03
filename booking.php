@@ -107,7 +107,7 @@ if (isset($_POST['book'])) {
 
                             $message = "✅ Appointment booked successfully! A confirmation email has been sent.";
 
-                            // 🔹 Brevo API Email Function
+                            //  Brevo API Email Function
                             function sendBrevoEmail($toEmail, $toName, $subject, $htmlContent) {
                                 $apiKey = getenv('BREVO_API_KEY');
                                 $url = 'https://api.brevo.com/v3/smtp/email';
@@ -134,7 +134,7 @@ if (isset($_POST['book'])) {
                                 curl_close($ch);
                             }
 
-                            // 📧 Customer Email
+                            //  Customer Email
                             if (!empty($custEmail)) {
                                 $custHtml = "
                                     <div style='background:#0d0d0d;color:#fff;font-family:Poppins,Arial,sans-serif;padding:20px;border-radius:10px;border:1px solid #d4af37;'>
